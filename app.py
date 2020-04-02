@@ -41,7 +41,7 @@ def main():
     
     report = SimilarDayReport('dropbox-local/Similar Days March.xlsx', 'dropbox-local/Similar Days March_20200402.xlsx', 'dropbox-local/historical')
     report.generate(archive=False)
-    report.save()
+    # report.save()
 
 class SimilarDayReport:
 
@@ -95,25 +95,32 @@ class SimilarDayReport:
         """Criteria:
         +/- 2 degrees
         Start on minus year, same day"""
+        factor_year = 1.0
+        factor_month = 5.0
+        factor_day = 2.0
+        factor_time = 2.0
+        factor_wind = 1.25
+
         df_work = df_hist.copy(deep=True)
         df_work = df_work[df_work['GAS_DATE'] > pd.to_datetime('20190101')]
         df_work = df_work[df_work['GAS_DATE'] < pd.to_datetime('20200301')]
-        
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] > df_day.iloc[0]['GAS_DAY_AVG_TMP'] - 2]
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] < df_day.iloc[0]['GAS_DAY_AVG_TMP'] + 2]
 
+        df_work['YEAR_DELTA'] = (abs(df_work['GAS_DATE'].dt.year - df_day.iloc[0]['GAS_DATE'].year)+1) * factor_year 
+        df_work['MONTH_DELTA'] = (abs(df_work['GAS_DATE'].dt.month - df_day.iloc[0]['GAS_DATE'].month)+1) * factor_month
+        df_work['DAY_DELTA'] = (abs(df_work['GAS_DATE'].dt.day - df_day.iloc[0]['GAS_DATE'].day)+1) * factor_day
+        df_work['TIME_DELTA'] = df_work['YEAR_DELTA'] + df_work['MONTH_DELTA'] + df_work['DAY_DELTA'] * factor_time
+
         df_work['DAY_SHORTNAME'] = df_work['GAS_DATE'].dt.dayofweek.apply(to_dayname)
-        df_work['SAME_DAYOFWEEK_MULTIPLE'] = abs((df_work['DAY_TYPE'] == to_daytype(df_day.iloc[0]['DAY_TYPE'])).astype(int) - 1) + 1 # same day type => 1, opposing = 2 (divided by at the end)
-        df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP'])
-        df_work['TIME_DELTA'] = abs(df_work['GAS_DATE'].dt.year*1 - df_day.iloc[0]['GAS_DATE'].year*1) + \
-            abs(df_work['GAS_DATE'].dt.month*100 - df_day.iloc[0]['GAS_DATE'].month*100) + \
-            abs(df_work['GAS_DATE'].dt.day*10 - df_day.iloc[0]['GAS_DATE'].day*10) # in order of weightedness => (month, day, year)
-        df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED'])
+        df_work['SAME_DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == to_daytype(df_day.iloc[0]['DAY_TYPE'])).astype(int) - 1) + 1)
+        df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP']) # not used in DELTA_WEIGHTED
+        df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED']) * factor_wind
         df_work['DTH_DELTA'] = abs(df_work['DTH'] - df_day.iloc[0]['DTH'])
 
-        df_work['DELTA_WEIGHTED'] = abs(df_work['TIME_DELTA'] - df_work['WIND_DELTA']/2 / (df_work['SAME_DAYOFWEEK_MULTIPLE']/0.5))
+        df_work['DELTA_WEIGHTED'] = abs(df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['SAME_DAYOFWEEK_MULTIPLE']
 
-        df_work.sort_values(by=['DELTA_WEIGHTED'], inplace = True)
+        df_work.sort_values(by=['DELTA_WEIGHTED'], inplace=True)
 
         return df_work.head(num_matches).reset_index()
 
