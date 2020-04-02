@@ -41,7 +41,7 @@ def main():
     
     report = SimilarDayReport('dropbox-local/Similar Days March.xlsx', 'dropbox-local/Similar Days March_20200402.xlsx', 'dropbox-local/historical')
     report.generate(archive=False)
-    # report.save()
+    report.save()
 
 class SimilarDayReport:
 
@@ -88,6 +88,7 @@ class SimilarDayReport:
         df.rename(columns = {'DayType':'DAY_TYPE'}, inplace=True) # rename for column name consistency
         df['DTH'] = df['DTH'].apply(lambda x: x/1000) # convert to dekatherm
         df['GAS_DATE'] = pd.to_datetime(df['GAS_DATE']) # convert to datetime
+        df['DAY_SHORTNAME'] = df['GAS_DATE'].dt.dayofweek.apply(to_dayname) # add shortname column (Mon, Tues)
         df.reset_index()
         return df
 
@@ -112,13 +113,13 @@ class SimilarDayReport:
         df_work['DAY_DELTA'] = (abs(df_work['GAS_DATE'].dt.day - df_day.iloc[0]['GAS_DATE'].day)+1) * factor_day
         df_work['TIME_DELTA'] = df_work['YEAR_DELTA'] + df_work['MONTH_DELTA'] + df_work['DAY_DELTA'] * factor_time
 
-        df_work['DAY_SHORTNAME'] = df_work['GAS_DATE'].dt.dayofweek.apply(to_dayname)
-        df_work['SAME_DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == to_daytype(df_day.iloc[0]['DAY_TYPE'])).astype(int) - 1) + 1)
-        df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP']) # not used in DELTA_WEIGHTED
         df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED']) * factor_wind
-        df_work['DTH_DELTA'] = abs(df_work['DTH'] - df_day.iloc[0]['DTH'])
+        df_work['DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == to_daytype(df_day.iloc[0]['DAY_TYPE'])).astype(int) - 1) + 1)
 
-        df_work['DELTA_WEIGHTED'] = abs(df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['SAME_DAYOFWEEK_MULTIPLE']
+        df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP']) # display only, not used in final weight
+        df_work['DTH_DELTA'] = abs(df_work['DTH'] - df_day.iloc[0]['DTH']) # display only, not used in final weight
+
+        df_work['DELTA_WEIGHTED'] = abs(df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['DAYOFWEEK_MULTIPLE']
 
         df_work.sort_values(by=['DELTA_WEIGHTED'], inplace=True)
 
