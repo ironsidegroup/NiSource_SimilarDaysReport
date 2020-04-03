@@ -1,5 +1,7 @@
 # Dev environment
 dropbox-local
+aws-env
+.vscode
 
 # Excel files
 *.xlsx
