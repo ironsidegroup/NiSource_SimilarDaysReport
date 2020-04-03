@@ -36,67 +36,66 @@ class SimilarDayReport:
     companies = {'CKY': 32, 'COH': 34, 'CMD': 35, 'CPA': 37, 'CGV': 38, 'CMA': 80}
 
     def __init__(self):
-        self.daily_file = self.get_daily_file()
-        self.daily_dir = '.'
-        self.daily_path = pathlib.Path.joinpath(self.daily_dir, self.daily_file)
-        self.report_file = self.get_current_report()
-        self.report_dir = '.'
-        self.report_path = pathlib.Path.joinpath(self.report_dir, self.report_file)
+        base_dir = 'aws-env'
+        self.daily_dir = base_dir
+        self.report_dir = base_dir
+        self.daily_filepath = self.get_daily_file()
+        self.report_filepath = self.get_current_report()
 
-        self.hist_dir = '/historical'
-        self.archive_dir = '/archive'
-        self.backup_dir = '/bak'
+        self.hist_dir = pathlib.Path(base_dir, 'historical')
+        self.archive_dir = pathlib.Path(base_dir, 'archive')
+        self.backup_dir = pathlib.Path(base_dir, 'bak')
 
-        self.wb = load_workbook(self.report_file, data_only=True)
+        self.wb = load_workbook(self.report_filepath, data_only=True)
     
     def generate(self, save=True):
-        if save():
+        if save:
             self.create_backup()
 
-        df_daily = self.load_daily(self.daily_path)
-        for _, df_row in df_daily.iterrows():
-            for sheet in self.wb.worksheets:
+        df_daily = self.load_daily(self.daily_filepath)
+        print(df_daily)
+        for sheet in self.wb.worksheets:
+            hist_path = pathlib.Path(self.hist_dir, f'{sheet.title} data.csv')
+            df_hist = self.load_historical(hist_path)
+            df_company = df_daily[df_daily['COMPANY'] == self.companies[sheet.title]]
+            for cell in sheet.iter_cols(min_col=2, min_row=4, max_row=4):
+                col = get_column_letter(cell[0].column)
+                report_dt = sheet[f'{col}4'].value
                 
-                hist_path = pathlib.Path.joinpath(self.hist_dir, f'{sheet.title} data.csv')
-                df_hist = self.load_historical(hist_path)
-                df_day = df_row[df_daily['COMPANY'] == self.companies[sheet.title]]
-                for cell in sheet.iter_cols(min_col=2, min_row=6, max_row=6):
-                    col = get_column_letter(cell[0].column)
-                    if not (sheet[f'{col}16'].value is None and sheet[f'{col}23'].value is None and sheet[f'{col}30'].value is None): # only continue if Similar Days are empty
-                        continue
-                    
-                    print(f'Found blank day in {sheet.title}: ', sheet[f'{col}4'].value)
+                # if current column is in daily data and it's not already filled in
+                if report_dt in df_company['GAS_DATE'].to_list():
+                    if sheet[f'{col}16'].value is None and sheet[f'{col}23'].value is None and sheet[f'{col}30'].value is None:
+                        print(f'Found blank day in {sheet.title}: ', sheet[f'{col}4'].value)
+                        df_day = df_company[df_company['GAS_DATE'] == report_dt]
+                        df_matches = self.find_similar(df_day, df_hist, 3)
 
-                    # df_day = df_hist[df_hist['GAS_DATE'] == pd.to_datetime(sheet[f'{col}4'].value)].reset_index() # modify this line to adjust for incoming data format
-                    df_matches = self.find_similar(df_day, df_hist, 3)
+                        avg_similar_day = (df_matches.iloc[0]['DTH'] + df_matches.iloc[1]['DTH'] + df_matches.iloc[2]['DTH']) / 3
+                        pct_diff = ((df_day.iloc[0]['DTH'] - avg_similar_day)/avg_similar_day)
 
-                    avg_similar_day = (df_matches.iloc[0]['DTH'] + df_matches.iloc[1]['DTH'] + df_matches.iloc[2]['DTH']) / 3
-                    pct_diff = ((df_day.iloc[0]['DTH'] - avg_similar_day)/avg_similar_day)
+                        sheet[f'{col}12'] = pct_diff
+                        sheet[f'{col}14'] = avg_similar_day
 
-                    sheet[f'{col}12'] = pct_diff
-                    sheet[f'{col}14'] = avg_similar_day
+                        self.pprint(df_day, pct_diff, avg_similar_day, df_matches)
 
-                    self.pprint(df_day, pct_diff, avg_similar_day, df_matches)
-
-                    for i in range(0, len(df_matches)):
-                        sheet[f'{col}{16+(7*i)}'] = df_matches.iloc[i]['DTH']
-                        sheet[f'{col}{17+(7*i)}'] = df_matches.iloc[i]['GAS_DATE']
-                        sheet[f'{col}{18+(7*i)}'] = df_matches.iloc[i]['DAY_SHORTNAME']
-                        sheet[f'{col}{19+(7*i)}'] = df_matches.iloc[i]['GAS_DAY_AVG_TMP']
-                        sheet[f'{col}{20+(7*i)}'] = df_matches.iloc[i]['PRIOR_TEMP']
-                        sheet[f'{col}{21+(7*i)}'] = df_matches.iloc[i]['GAS_DAY_WIND_SPEED']
+                        for i in range(0, len(df_matches)):
+                            sheet[f'{col}{16+(7*i)}'] = df_matches.iloc[i]['DTH']
+                            sheet[f'{col}{17+(7*i)}'] = df_matches.iloc[i]['GAS_DATE']
+                            sheet[f'{col}{18+(7*i)}'] = df_matches.iloc[i]['DAY_SHORTNAME']
+                            sheet[f'{col}{19+(7*i)}'] = df_matches.iloc[i]['GAS_DAY_AVG_TMP']
+                            sheet[f'{col}{20+(7*i)}'] = df_matches.iloc[i]['PRIOR_TEMP']
+                            sheet[f'{col}{21+(7*i)}'] = df_matches.iloc[i]['GAS_DAY_WIND_SPEED']
             
         if save:
             self.save()
             self.delete_backup()
     
     def get_daily_file(self):
-        newest = min(glob.iglob('* data.csv'), key=os.path.getctime)
+        newest = min(glob.iglob(str(pathlib.Path(self.daily_dir, '* data.csv'))), key=os.path.getctime)
         print(f'Using daily file {newest}')
         return pathlib.Path(newest)
 
     def get_current_report(self):
-        newest = min(glob.iglob('Similar Days*.xlsx'), key=os.path.getctime)
+        newest = min(glob.iglob(str(pathlib.Path(self.report_dir, 'Similar Days*.xlsx'))), key=os.path.getctime)
         print(f'Using daily file {newest}')
         return pathlib.Path(newest)
 
@@ -106,7 +105,7 @@ class SimilarDayReport:
         df['DTH'] = df['DTH'].apply(lambda x: x/1000) # convert to dekatherm
         df['GAS_DATE'] = pd.to_datetime(df['GAS_DATE']) # convert to datetime
         df['DAY_SHORTNAME'] = df['GAS_DATE'].dt.dayofweek.apply(to_dayname) # add shortname column (Mon, Tues)
-        df.sort_values(by=['GAS_DATE']).reset_index()
+        df.sort_values(by=['COMPANY']).reset_index()
         return df
 
     def load_historical(self, filepath: pathlib.Path):
