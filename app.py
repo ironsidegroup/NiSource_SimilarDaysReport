@@ -1,26 +1,20 @@
-import csv
-import os
 import argparse
-import sys
-import unicodedata
+import calendar
+import csv
 import glob
 import math
-import calendar
-from datetime import date
+import os
 import pathlib
-
-from dotenv import load_dotenv
+import sys
+import unicodedata
+import shutil
+from datetime import date, timedelta
 
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter
-import dropbox
-import boto3
 
-load_dotenv(verbose=True)
-
-TOKEN=os.getenv("DROPBOX_ACCESS_TOKEN")
-APP_KEY=os.getenv("DROPBOX_APP_KEY")   
+from aws import connect_to_dropbox
 
 def main():
     """Connects to Dropbox, pulls all current day .csv files, 
@@ -28,19 +22,22 @@ def main():
     creates excel report and places back in Dropbox.
     """
     
+    # connect_to_dropbox()
+    # quit()
+
     report = SimilarDayReport()
-    report.generate(save=False)
+    report.generate(save=True)
 
 class SimilarDayReport:
 
     companies = {'CKY': 32, 'COH': 34, 'CMD': 35, 'CPA': 37, 'CGV': 38, 'CMA': 80}
 
-    def __init__(self):
+    def __init__(self, daily_file=None, report_file=None):
         base_dir = 'aws-env'
         self.daily_dir = base_dir
         self.report_dir = base_dir
-        self.daily_filepath = self.get_daily_file()
-        self.report_filepath = self.get_current_report()
+        self.daily_filepath = daily_file if daily_file else self.get_daily_file()
+        self.report_filepath = report_file if report_file else self.get_current_report()
 
         self.hist_dir = pathlib.Path(base_dir, 'historical')
         self.archive_dir = pathlib.Path(base_dir, 'archive')
@@ -48,12 +45,13 @@ class SimilarDayReport:
 
         self.wb = load_workbook(self.report_filepath, data_only=True)
     
-    def generate(self, save=True):
+    def generate(self, save=True, logging=True):
+        print(f'\nRunning report generation for {self.report_filepath} with daily data: {self.daily_filepath}')
+
         if save:
             self.create_backup()
 
         df_daily = self.load_daily(self.daily_filepath)
-        print(df_daily)
         for sheet in self.wb.worksheets:
             hist_path = pathlib.Path(self.hist_dir, f'{sheet.title} data.csv')
             df_hist = self.load_historical(hist_path)
@@ -64,7 +62,7 @@ class SimilarDayReport:
                 
                 # if current column is in daily data and it's not already filled in
                 if report_dt in df_company['GAS_DATE'].to_list():
-                    if sheet[f'{col}16'].value is None and sheet[f'{col}23'].value is None and sheet[f'{col}30'].value is None:
+                    if sheet[f'{col}6'].value is None or sheet[f'{col}16'].value is None or sheet[f'{col}23'].value is None or sheet[f'{col}30'].value is None:
                         print(f'Found blank day in {sheet.title}: ', sheet[f'{col}4'].value)
                         df_day = df_company[df_company['GAS_DATE'] == report_dt]
                         df_matches = self.find_similar(df_day, df_hist, 3)
@@ -75,7 +73,13 @@ class SimilarDayReport:
                         sheet[f'{col}12'] = pct_diff
                         sheet[f'{col}14'] = avg_similar_day
 
-                        self.pprint(df_day, pct_diff, avg_similar_day, df_matches)
+                        if logging:
+                            self.pprint(df_day, pct_diff, avg_similar_day, df_matches)
+
+                        sheet[f'{col}{6}'] = df_day.iloc[0]['DTH']
+                        sheet[f'{col}{8}'] = df_day.iloc[0]['GAS_DAY_AVG_TMP']
+                        sheet[f'{col}{9}'] = df_day.iloc[0]['PRIOR_TEMP']
+                        sheet[f'{col}{10}'] = df_day.iloc[0]['GAS_DAY_WIND_SPEED']
 
                         for i in range(0, len(df_matches)):
                             sheet[f'{col}{16+(7*i)}'] = df_matches.iloc[i]['DTH']
@@ -91,12 +95,12 @@ class SimilarDayReport:
     
     def get_daily_file(self):
         newest = min(glob.iglob(str(pathlib.Path(self.daily_dir, '* data.csv'))), key=os.path.getctime)
-        print(f'Using daily file {newest}')
+        print(f'Daily filename not given. Using {newest} as most recent')
         return pathlib.Path(newest)
 
     def get_current_report(self):
         newest = min(glob.iglob(str(pathlib.Path(self.report_dir, 'Similar Days*.xlsx'))), key=os.path.getctime)
-        print(f'Using daily file {newest}')
+        print(f'Report filename not given. Using {newest} as most recent')
         return pathlib.Path(newest)
 
     def load_daily(self, filepath: pathlib.Path):
@@ -126,7 +130,7 @@ class SimilarDayReport:
         factor_day = 2.0
         factor_time = 2.0
         factor_wind = 1.25
-        factor_dayofweek = 2.0
+        factor_dayofweek = 3.0
 
         df_work = df_hist.copy(deep=True)
         df_work = df_work[df_work['GAS_DATE'] > pd.to_datetime('20190101')]
@@ -153,28 +157,27 @@ class SimilarDayReport:
 
     def save(self):
         # Save old workbook with current date inserted (move from /bak to /archive and add date)
-        report_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, self.hist_dir, self.report_file.with_suffix('.bak')))
-        report_ext = ''.join(report_bak.suffixes[:-1])
-        report_archive = with_date(f'{report_bak.stem}{report_ext}')
-        report_bak.rename(pathlib.Path.joinpath(self.archive_dir, 'reports', report_archive))
+        report_bakfile = (self.report_filepath.parent / self.report_filepath.name).with_suffix(self.report_filepath.suffix + '.bak').parts[-1]
+        report_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, report_bakfile))
+        report_bak.replace(pathlib.Path.joinpath(self.archive_dir, 'reports', with_date(self.report_filepath)))
         
         # Save new workbook
-        self.wb.save(self.report_file)
+        self.wb.save(self.report_filepath)
 
-        # Archive daily data
-        daily_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, self.hist_dir, self.daily_file.with_suffix('.bak')))
-        daily_ext = ''.join(daily_bak.suffixes[:-1])
-        daily_archive = with_date(f'{daily_bak.stem}{daily_ext}')
-        daily_bak.rename(pathlib.Path.joinpath(self.archive_dir, 'daily', daily_archive))
+        # # Archive daily data
+        daily_bakfile = (self.daily_filepath.parent / self.daily_filepath.name).with_suffix(self.daily_filepath.suffix + '.bak').parts[-1]
+        daily_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, daily_bakfile))
+        daily_bak.replace(pathlib.Path.joinpath(self.archive_dir, 'daily', self.daily_filepath.parts[-1]))
         
         # Append daily data to each company file
-        daily_path = pathlib.Path.joinpath(self.daily_dir, self.daily_file)
-        df_daily = self.load_daily(daily_path)
+        # df_daily = self.load_daily(self.daily_filepath)
+
+        df_daily = pd.read_csv(self.daily_filepath)
         for company_code in df_daily['COMPANY'].unique():
             company_name = list(self.companies.keys())[list(self.companies.values()).index(company_code)]
             company_file = pathlib.Path.joinpath(self.hist_dir, f'{company_name} data.csv')
             df_hist = pd.read_csv(company_file)
-            df = pd.concat(df_hist, df_daily[df_daily['COMPANY'] == company_code])
+            df = pd.concat([df_hist, df_daily[df_daily['COMPANY'] == company_code]])
             df.to_csv(company_file)
 
         return True
@@ -183,37 +186,36 @@ class SimilarDayReport:
         """Creates temporary backups for all files in case rollback is needed.
         These backups are deleted upon successful save.
         """
-        import shutil
-
         pathlib.Path(self.backup_dir).mkdir(exist_ok=True) # create backup directory, overwriting if necessary
-        pathlib.Path(pathlib.Path.joinpath(self.backup_dir, self.hist_dir)).mkdir(exist_ok=True) # create history directory
-        daily_filepath = pathlib.Path(self.daily_file)
-        report_filepath = pathlib.Path(self.report_file)
-        history_dirpath = pathlib.Path(self.hist_dir)
+        pathlib.Path(pathlib.Path.joinpath(self.backup_dir, self.hist_dir.parts[-1])).mkdir(exist_ok=True) # create history directory
 
         # Create backups
-        daily_bak = shutil.copy(daily_filepath, daily_filepath.with_suffix('.bak'))
+        daily_bakfile = (self.daily_filepath.parent / self.daily_filepath.name).with_suffix(self.daily_filepath.suffix + '.bak').parts[-1]
+        daily_bak = shutil.copy(self.daily_filepath, pathlib.Path.joinpath(self.backup_dir, daily_bakfile))
         print(f'{daily_bak} created')
-        report_bak = shutil.copy(report_filepath, report_filepath.with_suffix('.bak'))
+
+        report_bakfile = (self.report_filepath.parent / self.report_filepath.name).with_suffix(self.report_filepath.suffix + '.bak').parts[-1]
+        report_bak = shutil.copy(self.report_filepath, pathlib.Path.joinpath(self.backup_dir, report_bakfile))
         print(f'{report_bak} created')
-        for f in history_dirpath.iterdir():
-            hist_bak = shutil.copy(f, f.with_suffix('.bak'))
+
+        for f in self.hist_dir.iterdir():
+            hist_bakfile = (f.parent / f.name).with_suffix(f.suffix + '.bak').parts[-1]
+            hist_bak = shutil.copy(f, pathlib.Path.joinpath(self.backup_dir, self.hist_dir.parts[-1], hist_bakfile))
             print(f'{hist_bak} created')
 
         # validation check
-        daily_ok = daily_filepath.with_suffix('.bak').is_file()
-        report_ok = report_filepath.with_suffix('.bak').is_file()
-        hist_ok = all(f.is_file() for f in history_dirpath.iterdir())
+        daily_ok = daily_bak.is_file()
+        report_ok = report_bak.is_file()
+        hist_ok = all(f.is_file() for f in self.hist_dir.iterdir())
 
         if not (daily_ok and report_ok and hist_ok):
             print('Backup creation failed. Exiting...')
             sys.exit(1)
 
     def delete_backup(self):
-        backup_dir = pathlib.Path(self.backup_dir)
-        for f in backup_dir.rglob('*'):
-            f.unlink()
-        backup_dir.rmdir()
+        for f in self.backup_dir.rglob('*'):
+            shutil.rmtree(f)
+        self.backup_dir.rmdir()
         print('Successfully deleted backups')
         return True
 
@@ -244,8 +246,10 @@ def with_date(filename: pathlib.Path):
     Example:
     Similar Reports April.xlsx => Similar Reports Aprils_20200101.xlsx
     """
-    dt = date.today().strftime('%Y%m%d')
-    return Pathlib.path(f'{filename.stem}_{dt}{filename.suffixes}')
+    stem = filename.stem
+    dt = (date.today()-timedelta(1)).strftime('%Y%m%d') # yesterday, in format 20200101
+    sfxs = ''.join(filename.suffix)
+    return pathlib.Path(f'{stem}_{dt}{sfxs}')
 
 if __name__ == '__main__':
     main()

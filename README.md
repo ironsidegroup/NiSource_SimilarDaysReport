@@ -1,5 +1,9 @@
 The purpose of this package is to take daily dropped files from Dropbox, perform matching based on specified criteria, and add to excel file
 
+Usage notes:
+- If data flows to multiple months (eg. a weekend goes from the end of the month into the next), do this process in two batches.
+- First drop the data up to month end into the folder and let run. Then drop next month data and next report in. 
+
 Stack:
 - Python
     - CSV (stdlib)
