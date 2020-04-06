@@ -68,4 +68,14 @@ print('WROTE TO CSV')
 
 # --- #
 
+
+# factor_month = 10.0
+# factor_day = 2.0
+
+# df_work['MONTH_DELTA'] = (abs(df_work['GAS_DATE'].dt.month - df_day.iloc[0]['GAS_DATE'].month)+1) * factor_month
+# df_work['DAY_DELTA'] = (abs(df_work['GAS_DATE'].dt.day - df_day.iloc[0]['GAS_DATE'].day)+1) * factor_day
+
+
+# df_work['TIME_DELTA'] = (df_work['YEAR_DELTA'] + df_work['MONTH_DELTA'] + df_work['DAY_DELTA']) * factor_time
+
 ```

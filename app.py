@@ -23,10 +23,11 @@ def main():
     """
     
     # connect_to_dropbox()
-    # quit()
+    
+    quit()
 
     report = SimilarDayReport()
-    report.generate(save=True)
+    report.generate(save=False, overwrite=False, logging=True)
 
 class SimilarDayReport:
 
@@ -45,7 +46,7 @@ class SimilarDayReport:
 
         self.wb = load_workbook(self.report_filepath, data_only=True)
     
-    def generate(self, save=True, logging=True):
+    def generate(self, save=False, overwrite=False, logging=True):
         print(f'\nRunning report generation for {self.report_filepath} with daily data: {self.daily_filepath}')
 
         if save:
@@ -62,10 +63,11 @@ class SimilarDayReport:
                 
                 # if current column is in daily data and it's not already filled in
                 if report_dt in df_company['GAS_DATE'].to_list():
-                    if sheet[f'{col}6'].value is None or sheet[f'{col}16'].value is None or sheet[f'{col}23'].value is None or sheet[f'{col}30'].value is None:
+                    has_empty_values = sheet[f'{col}6'].value is None or sheet[f'{col}16'].value is None or sheet[f'{col}23'].value is None or sheet[f'{col}30'].value is None
+                    if has_empty_values or overwrite:
                         print(f'Found blank day in {sheet.title}: ', sheet[f'{col}4'].value)
                         df_day = df_company[df_company['GAS_DATE'] == report_dt]
-                        df_matches = self.find_similar(df_day, df_hist, 3)
+                        df_matches = self.find_similar(df_day, df_hist, min(df_daily['GAS_DATE']), 3)
 
                         avg_similar_day = (df_matches.iloc[0]['DTH'] + df_matches.iloc[1]['DTH'] + df_matches.iloc[2]['DTH']) / 3
                         pct_diff = ((df_day.iloc[0]['DTH'] - avg_similar_day)/avg_similar_day)
@@ -121,35 +123,31 @@ class SimilarDayReport:
         df.reset_index()
         return df
 
-    def find_similar(self, df_day, df_hist, num_matches):
+    def find_similar(self, df_day, df_hist, min_day, num_matches):
         """Criteria:
         +/- 2 degrees
         Start on minus year, same day"""
         factor_year = 1.0
-        factor_month = 10.0
-        factor_day = 2.0
-        factor_time = 2.0
+        factor_dayofyear = 1.0
+        factor_time = 10.0
         factor_wind = 1.25
         factor_dayofweek = 3.0
 
         df_work = df_hist.copy(deep=True)
-        df_work = df_work[df_work['GAS_DATE'] > pd.to_datetime('20190101')]
-        df_work = df_work[df_work['GAS_DATE'] < pd.to_datetime('20200301')]
+        df_work = df_work[df_work['GAS_DATE'] < min_day]
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] > df_day.iloc[0]['GAS_DAY_AVG_TMP'] - 2]
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] < df_day.iloc[0]['GAS_DAY_AVG_TMP'] + 2]
 
         df_work['YEAR_DELTA'] = (abs(df_work['GAS_DATE'].dt.year - df_day.iloc[0]['GAS_DATE'].year)+1) * factor_year 
-        df_work['MONTH_DELTA'] = (abs(df_work['GAS_DATE'].dt.month - df_day.iloc[0]['GAS_DATE'].month)+1) * factor_month
-        df_work['DAY_DELTA'] = (abs(df_work['GAS_DATE'].dt.day - df_day.iloc[0]['GAS_DATE'].day)+1) * factor_day
-        df_work['TIME_DELTA'] = df_work['YEAR_DELTA'] + df_work['MONTH_DELTA'] + df_work['DAY_DELTA'] * factor_time
-
+        df_work['DAYOFYEAR_DELTA'] = (abs(df_work['GAS_DATE'].dt.dayofyear - df_day.iloc[0]['GAS_DATE'].dayofyear)+1) * factor_dayofyear
+        df_work['DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == df_day.iloc[0]['DAY_TYPE']).astype(int)-1)+1) ** factor_dayofweek
         df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED']) * factor_wind
-        df_work['DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == to_daytype(df_day.iloc[0]['DAY_TYPE'])).astype(int) - 1) + 1) * factor_dayofweek
 
         df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP']) # display only, not used in final weight
         df_work['DTH_DELTA'] = abs(df_work['DTH'] - df_day.iloc[0]['DTH']) # display only, not used in final weight
 
-        df_work['DELTA_WEIGHTED'] = abs(df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['DAYOFWEEK_MULTIPLE']
+        df_work['TIME_DELTA'] = (df_work['YEAR_DELTA'] + df_work['DAYOFYEAR_DELTA']) * factor_time
+        df_work['DELTA_WEIGHTED'] = (df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['DAYOFWEEK_MULTIPLE']
 
         df_work.sort_values(by=['DELTA_WEIGHTED'], inplace=True)
 
@@ -170,15 +168,15 @@ class SimilarDayReport:
         daily_bak.replace(pathlib.Path.joinpath(self.archive_dir, 'daily', self.daily_filepath.parts[-1]))
         
         # Append daily data to each company file
-        # df_daily = self.load_daily(self.daily_filepath)
-
         df_daily = pd.read_csv(self.daily_filepath)
         for company_code in df_daily['COMPANY'].unique():
             company_name = list(self.companies.keys())[list(self.companies.values()).index(company_code)]
-            company_file = pathlib.Path.joinpath(self.hist_dir, f'{company_name} data.csv')
-            df_hist = pd.read_csv(company_file)
-            df = pd.concat([df_hist, df_daily[df_daily['COMPANY'] == company_code]])
-            df.to_csv(company_file)
+            company_filepath = pathlib.Path.joinpath(self.hist_dir, f'{company_name} data.csv')
+            df_hist = pd.read_csv(company_filepath)
+
+            # append, making sure not to re-insert if data already present
+            df = pd.concat([df_hist, df_daily[df_daily['COMPANY'] == company_code]]).drop_duplicates().sort_values(by='GAS_DATE').reset_index(drop=True)
+            df.to_csv(company_filepath, index=False)
 
         return True
 
