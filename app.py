@@ -9,6 +9,7 @@ import sys
 import unicodedata
 import shutil
 from datetime import date, timedelta
+from dateutil.relativedelta import relativedelta
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -22,12 +23,8 @@ def main():
     creates excel report and places back in Dropbox.
     """
     
-    # connect_to_dropbox()
-    
-    quit()
-
     report = SimilarDayReport()
-    report.generate(save=False, overwrite=False, logging=True)
+    report.generate(5, save=False, overwrite=True, logging=False)
 
 class SimilarDayReport:
 
@@ -46,7 +43,7 @@ class SimilarDayReport:
 
         self.wb = load_workbook(self.report_filepath, data_only=True)
     
-    def generate(self, save=False, overwrite=False, logging=True):
+    def generate(self, num_matches, save=False, overwrite=False, logging=False):
         print(f'\nRunning report generation for {self.report_filepath} with daily data: {self.daily_filepath}')
 
         if save:
@@ -67,16 +64,16 @@ class SimilarDayReport:
                     if has_empty_values or overwrite:
                         print(f'Found blank day in {sheet.title}: ', sheet[f'{col}4'].value)
                         df_day = df_company[df_company['GAS_DATE'] == report_dt]
-                        df_matches = self.find_similar(df_day, df_hist, min(df_daily['GAS_DATE']), 3)
+                        df_matches = self.find_similar(df_day, df_hist, num_matches)
 
                         avg_similar_day = (df_matches.iloc[0]['DTH'] + df_matches.iloc[1]['DTH'] + df_matches.iloc[2]['DTH']) / 3
                         pct_diff = ((df_day.iloc[0]['DTH'] - avg_similar_day)/avg_similar_day)
 
-                        sheet[f'{col}12'] = pct_diff
-                        sheet[f'{col}14'] = avg_similar_day
-
                         if logging:
                             self.pprint(df_day, pct_diff, avg_similar_day, df_matches)
+
+                        sheet[f'{col}12'] = pct_diff
+                        sheet[f'{col}14'] = avg_similar_day
 
                         sheet[f'{col}{6}'] = df_day.iloc[0]['DTH']
                         sheet[f'{col}{8}'] = df_day.iloc[0]['GAS_DAY_AVG_TMP']
@@ -123,7 +120,7 @@ class SimilarDayReport:
         df.reset_index()
         return df
 
-    def find_similar(self, df_day, df_hist, min_day, num_matches):
+    def find_similar(self, df_day, df_hist, num_matches):
         """Criteria:
         +/- 2 degrees
         Start on minus year, same day"""
@@ -133,8 +130,15 @@ class SimilarDayReport:
         factor_wind = 1.25
         factor_dayofweek = 3.0
 
+        end_range = df_day.iloc[0]['GAS_DATE'] + relativedelta(months=-1)
+        start_range = df_day.iloc[0]['GAS_DATE'] + relativedelta(months=-25)
+        print(f'Using date range {start_range} => {end_range.dt}')
+
         df_work = df_hist.copy(deep=True)
-        df_work = df_work[df_work['GAS_DATE'] < min_day]
+
+        df_work = df_work[df_work['GAS_DATE'] > pd.to_datetime(start_range)]
+        df_work = df_work[df_work['GAS_DATE'] < pd.to_datetime(end_range)]
+
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] > df_day.iloc[0]['GAS_DAY_AVG_TMP'] - 2]
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] < df_day.iloc[0]['GAS_DAY_AVG_TMP'] + 2]
 
