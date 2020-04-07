@@ -22,9 +22,9 @@ def main():
     parses based on matching criteria,
     creates excel report and places back in Dropbox.
     """
-    
+
     report = SimilarDayReport()
-    report.generate(5, save=False, overwrite=True, logging=False)
+    report.generate(10, save=False, overwrite=True, logging=True)
 
 class SimilarDayReport:
 
@@ -123,18 +123,19 @@ class SimilarDayReport:
     def find_similar(self, df_day, df_hist, num_matches):
         """Criteria:
         +/- 2 degrees
-        Start on minus year, same day"""
-        factor_year = 1.0
-        factor_dayofyear = 1.0
-        factor_time = 10.0
-        factor_wind = 1.25
-        factor_dayofweek = 3.0
+        # Start on minus year, same day"""
+        factor_year = 0.095
+        factor_dayofyear = 0.25
+        factor_wind = 0.005
+        factor_daytype = 0.65
 
         end_range = df_day.iloc[0]['GAS_DATE'] + relativedelta(months=-1)
         start_range = df_day.iloc[0]['GAS_DATE'] + relativedelta(months=-25)
-        print(f'Using date range {start_range} => {end_range.dt}')
+        print(f'Using date range {start_range} => {end_range}')
 
         df_work = df_hist.copy(deep=True)
+
+        print(f'INITIAL LEN {len(df_work)}')
 
         df_work = df_work[df_work['GAS_DATE'] > pd.to_datetime(start_range)]
         df_work = df_work[df_work['GAS_DATE'] < pd.to_datetime(end_range)]
@@ -142,18 +143,32 @@ class SimilarDayReport:
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] > df_day.iloc[0]['GAS_DAY_AVG_TMP'] - 2]
         df_work = df_work[df_work['GAS_DAY_AVG_TMP'] < df_day.iloc[0]['GAS_DAY_AVG_TMP'] + 2]
 
-        df_work['YEAR_DELTA'] = (abs(df_work['GAS_DATE'].dt.year - df_day.iloc[0]['GAS_DATE'].year)+1) * factor_year 
-        df_work['DAYOFYEAR_DELTA'] = (abs(df_work['GAS_DATE'].dt.dayofyear - df_day.iloc[0]['GAS_DATE'].dayofyear)+1) * factor_dayofyear
-        df_work['DAYOFWEEK_MULTIPLE'] = (abs((df_work['DAY_TYPE'] == df_day.iloc[0]['DAY_TYPE']).astype(int)-1)+1) ** factor_dayofweek
-        df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED']) * factor_wind
-
+        print(f'FILTERED LEN {len(df_work)}')
+        
         df_work['TMP_DELTA'] = abs(df_work['GAS_DAY_AVG_TMP'] - df_day.iloc[0]['GAS_DAY_AVG_TMP']) # display only, not used in final weight
         df_work['DTH_DELTA'] = abs(df_work['DTH'] - df_day.iloc[0]['DTH']) # display only, not used in final weight
 
-        df_work['TIME_DELTA'] = (df_work['YEAR_DELTA'] + df_work['DAYOFYEAR_DELTA']) * factor_time
-        df_work['DELTA_WEIGHTED'] = (df_work['TIME_DELTA'] - df_work['WIND_DELTA']) * df_work['DAYOFWEEK_MULTIPLE']
+        df_work['YEAR_DELTA'] = abs(df_work['GAS_DATE'].dt.year - df_day.iloc[0]['GAS_DATE'].year)+1
+        df_work['DAYOFYEAR_DELTA'] = abs(df_work['GAS_DATE'].dt.dayofyear - df_day.iloc[0]['GAS_DATE'].dayofyear)+1
+        df_work['WIND_DELTA'] = abs(df_work['GAS_DAY_WIND_SPEED'] - df_day.iloc[0]['GAS_DAY_WIND_SPEED'])+1
+        df_work['DAYTYPE_DELTA'] = abs((df_work['DAY_TYPE'] == df_day.iloc[0]['DAY_TYPE']).astype(int)-1) # 0 if same day, 1 if not
 
-        df_work.sort_values(by=['DELTA_WEIGHTED'], inplace=True)
+        df_work['YEAR_FACTOR'] = df_work['YEAR_DELTA']/max(abs(df_work['GAS_DATE'].dt.year))
+        df_work['DAYOFYEAR_FACTOR'] = df_work['DAYOFYEAR_DELTA']/max(abs(df_work['GAS_DATE'].dt.dayofyear))
+        df_work['WIND_FACTOR'] = df_work['WIND_DELTA']/max(abs(df_work['GAS_DAY_WIND_SPEED']))
+        df_work['DAYTYPE_FACTOR'] = df_work['DAYTYPE_DELTA']
+
+        df_work['WEIGHTED_FACTOR'] = \
+            (df_work['YEAR_FACTOR'] * factor_year) \
+            + (df_work['DAYOFYEAR_FACTOR'] * factor_dayofyear) \
+            + (df_work['WIND_FACTOR'] * factor_wind) \
+            + (df_work['DAYTYPE_FACTOR'] * factor_daytype)
+
+        df_work.sort_values(by=['WEIGHTED_FACTOR'], inplace=True)
+        if df_day.iloc[0]['GAS_DATE'] == pd.to_datetime('20200405'):
+            print(f'WRITING TO CSV WITH DATE {df_day.iloc[0]["GAS_DATE"]}')
+            pd.concat([df_day, df_work.head(50)]).to_csv(f'dropbox-local/matches/{list(self.companies.keys())[list(self.companies.values()).index(df_day.iloc[0]["COMPANY"])]}_matches.csv')
+            print('WROTE TO CSV')
 
         return df_work.head(num_matches).reset_index()
 
@@ -161,14 +176,17 @@ class SimilarDayReport:
         # Save old workbook with current date inserted (move from /bak to /archive and add date)
         report_bakfile = (self.report_filepath.parent / self.report_filepath.name).with_suffix(self.report_filepath.suffix + '.bak').parts[-1]
         report_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, report_bakfile))
+        print(f'Moving {report_bakfile} to archive')
         report_bak.replace(pathlib.Path.joinpath(self.archive_dir, 'reports', with_date(self.report_filepath)))
         
         # Save new workbook
+        print(f'Saving {self.report_filepath}')
         self.wb.save(self.report_filepath)
 
         # # Archive daily data
         daily_bakfile = (self.daily_filepath.parent / self.daily_filepath.name).with_suffix(self.daily_filepath.suffix + '.bak').parts[-1]
         daily_bak = pathlib.Path(pathlib.Path.joinpath(self.backup_dir, daily_bakfile))
+        print(f'Moving {daily_bakfile} to archive')
         daily_bak.replace(pathlib.Path.joinpath(self.archive_dir, 'daily', self.daily_filepath.parts[-1]))
         
         # Append daily data to each company file
@@ -176,10 +194,12 @@ class SimilarDayReport:
         for company_code in df_daily['COMPANY'].unique():
             company_name = list(self.companies.keys())[list(self.companies.values()).index(company_code)]
             company_filepath = pathlib.Path.joinpath(self.hist_dir, f'{company_name} data.csv')
+            print(f'Appending {company_name} data to {company_filepath}')
             df_hist = pd.read_csv(company_filepath)
 
             # append, making sure not to re-insert if data already present
             df = pd.concat([df_hist, df_daily[df_daily['COMPANY'] == company_code]]).drop_duplicates().sort_values(by='GAS_DATE').reset_index(drop=True)
+            print(f'Saving {company_filepath}')
             df.to_csv(company_filepath, index=False)
 
         return True
